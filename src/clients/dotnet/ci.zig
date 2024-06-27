@@ -37,7 +37,8 @@ pub fn tests(shell: *Shell, gpa: std.mem.Allocator) !void {
         defer shell.popd();
 
         var tmp_beetle = try TmpTigerBeetle.init(gpa, .{});
-        defer tmp_beetle.deinit(gpa);
+        defer tmp_beetle.deinit();
+        errdefer tmp_beetle.log_stderr();
 
         try shell.env.put("TB_ADDRESS", tmp_beetle.port_str.slice());
         try shell.exec("dotnet run", .{});
@@ -110,7 +111,8 @@ pub fn validate_release(shell: *Shell, gpa: std.mem.Allocator, options: struct {
     var tmp_beetle = try TmpTigerBeetle.init(gpa, .{
         .prebuilt = options.tigerbeetle,
     });
-    defer tmp_beetle.deinit(gpa);
+    defer tmp_beetle.deinit();
+    errdefer tmp_beetle.log_stderr();
 
     try shell.env.put("TB_ADDRESS", tmp_beetle.port_str.slice());
 

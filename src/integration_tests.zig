@@ -39,7 +39,7 @@ test "repl integration" {
             var tmp_beetle = try TmpTigerBeetle.init(std.testing.allocator, .{
                 .prebuilt = tigerbeetle,
             });
-            errdefer tmp_beetle.deinit(std.testing.allocator);
+            errdefer tmp_beetle.deinit();
 
             return Context{
                 .shell = shell,
@@ -49,7 +49,7 @@ test "repl integration" {
         }
 
         fn deinit(context: *Context) void {
-            context.tmp_beetle.deinit(std.testing.allocator);
+            context.tmp_beetle.deinit();
             context.shell.destroy();
             context.* = undefined;
         }

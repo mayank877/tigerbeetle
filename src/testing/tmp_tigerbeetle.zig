@@ -19,6 +19,10 @@ port_str: stdx.BoundedArray(u8, 8),
 
 tmp_dir: std.testing.TmpDir,
 
+// A separate thread for reading process stderr without blocking it. The process must be terminated
+// before stopping the reader.
+stderr_reader: ?*StreamReader,
+
 process: std.process.Child,
 
 pub fn init(
@@ -68,19 +72,27 @@ pub fn init(
         .{ .tigerbeetle = tigerbeetle, .data_file = data_file },
     );
 
+    var reader_maybe: ?*StreamReader = null;
     // Pass `--addresses=0` to let the OS pick a port for us.
     var process = try shell.spawn(
         .{
             .stdin_behavior = .Pipe,
             .stdout_behavior = .Pipe,
-            .stderr_behavior = .Ignore,
+            .stderr_behavior = .Pipe,
         },
         "{tigerbeetle} start --development --addresses=0 {data_file}",
         .{ .tigerbeetle = tigerbeetle, .data_file = data_file },
     );
     errdefer {
         _ = process.kill() catch unreachable;
+        if (reader_maybe) |reader| {
+            const stderr = reader.stop();
+            log.err("tigerbeetle stderr:\n++++\n{s}\n++++", .{stderr.items});
+            stderr.deinit();
+        }
     }
+
+    reader_maybe = try StreamReader.start(gpa, process.stderr.?);
 
     const port = port: {
         var exit_status: ?std.process.Child.Term = null;
@@ -106,12 +118,58 @@ pub fn init(
         .port = port,
         .port_str = port_str,
         .tmp_dir = tmp_dir,
+        .stderr_reader = reader_maybe,
         .process = process,
     };
 }
 
-pub fn deinit(tb: *TmpTigerBeetle, gpa: std.mem.Allocator) void {
-    _ = gpa;
-    _ = tb.process.kill() catch unreachable;
+pub fn deinit(tb: *TmpTigerBeetle) void {
+    if (tb.stderr_reader) |reader| {
+        _ = tb.process.kill() catch unreachable;
+        reader.stop().deinit();
+        tb.stderr_reader = null;
+    }
     tb.tmp_dir.cleanup();
 }
+
+pub fn log_stderr(tb: *TmpTigerBeetle) void {
+    if (tb.stderr_reader) |reader| {
+        _ = tb.process.kill() catch unreachable;
+        const stderr = reader.stop();
+        log.err("tigerbeetle stderr:\n++++\n{s}\n++++", .{stderr.items});
+        stderr.deinit();
+        tb.stderr_reader = null;
+    }
+}
+
+const StreamReader = struct {
+    thread: std.Thread,
+    buffer: std.ArrayList(u8),
+    file: std.fs.File,
+
+    pub fn start(gpa: std.mem.Allocator, file: std.fs.File) !*StreamReader {
+        var result = try gpa.create(StreamReader);
+        errdefer gpa.destroy(result);
+
+        result.* = .{
+            .thread = undefined,
+            .buffer = std.ArrayList(u8).init(gpa),
+            .file = file,
+        };
+
+        result.thread = try std.Thread.spawn(.{}, thread_main, .{result});
+        return result;
+    }
+
+    pub fn stop(self: *StreamReader) std.ArrayList(u8) {
+        self.thread.join();
+        const buffer = self.buffer;
+        buffer.allocator.destroy(self);
+        return buffer;
+    }
+
+    fn thread_main(reader: *StreamReader) void {
+        // NB: don't use `readAllAlloc` to get partial output in case of errors.
+        reader.file.reader().readAllArrayList(&reader.buffer, 100 * 1024 * 1024) catch {};
+    }
+};
